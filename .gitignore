@@ -1,0 +1,65 @@
+# ============================================================
+# HoneyChain — .gitignore
+# ============================================================
+
+# ── Dependencies ─────────────────────────────────────────────
+node_modules/
+server/node_modules/
+
+# ── Environment / Secrets (NEVER commit) ─────────────────────
+.env
+.env.*
+!.env.example
+
+server/.env
+server/.env.*
+!server/.env.example
+
+# ── Build Artifacts ──────────────────────────────────────────
+dist/
+dist-ssr/
+build/
+.vercel/
+
+# ── Logs ─────────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ── User Uploads (runtime files — not source code) ───────────
+server/uploads/
+uploads/
+
+# ── Hardhat / Blockchain Build Artifacts ─────────────────────
+artifacts/
+cache/
+typechain-types/
+
+# ── Hardhat Deployments (localhost only — testnet/mainnet kept) 
+deployments/localhost/
+deployments/*.json
+
+# ── Coverage ─────────────────────────────────────────────────
+coverage/
+coverage.json
+
+# ── OS & Editor ──────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# ── Temporary / Misc ─────────────────────────────────────────
+*.local
+*.tmp
+*.bak

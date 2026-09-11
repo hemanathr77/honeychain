@@ -1,0 +1,9 @@
+/**
+ * server/services/
+ *
+ * Place reusable business-logic services here.
+ * Example: emailService.js, notificationService.js, etc.
+ *
+ * This directory is intentionally kept minimal in the prototype.
+ * Batch ID generation lives in utils/generateBatchId.js.
+ */
