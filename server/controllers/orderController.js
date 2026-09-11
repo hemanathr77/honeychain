@@ -55,7 +55,8 @@ const createOrder = async (req, res) => {
 
       const product = await client.query(
         `SELECT id, name, price_per_kg, available_quantity, seller_id
-         FROM honey_products WHERE id = $1 AND status = 'ACTIVE'`,
+         FROM honey_products WHERE id = $1 AND status = 'ACTIVE'
+         FOR UPDATE`,
         [item.product_id]
       );
       if (product.rows.length === 0) {

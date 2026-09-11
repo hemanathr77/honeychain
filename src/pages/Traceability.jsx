@@ -297,7 +297,7 @@ export default function Traceability() {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={() => setQrModalOpen(false)}>
           <div className="bg-white rounded-2xl p-8 text-center shadow-2xl" onClick={e => e.stopPropagation()}>
             <h3 className="font-display font-bold text-charcoal-800 mb-4">Batch QR Code</h3>
-            <QRCode value={`${window.location.origin}/traceability/${activeBatchId}`} size={200} />
+            <QRCode value={`${window.location.origin}/verify-batch/${activeBatchId}`} size={200} />
             <p className="text-xs text-charcoal-400 mt-4 font-mono">{activeBatchId}</p>
             <button onClick={() => setQrModalOpen(false)} className="btn-secondary mt-4 text-sm">Close</button>
           </div>

@@ -38,7 +38,7 @@ export default function TrustCard({ batch, labReport }) {
       sub: labReport ? `Report: ${labReport.id}` : 'No report yet',
       status: labReport ? (labReport.overallStatus === 'COMPLIANT' ? 'compliant' : 'pending') : 'pending',
       evidence: labReport
-        ? `Sample ${labReport.sampleId} tested at ${labReport.labName}. Overall status: ${labReport.overallStatus}. DEMO DATA.`
+        ? `Sample ${labReport.sampleId} tested at ${labReport.labName}. Overall status: ${labReport.overallStatus}.`
         : 'No laboratory report has been uploaded for this batch yet.',
     },
     {

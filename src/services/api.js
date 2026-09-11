@@ -138,6 +138,25 @@ export const rescue = {
   list: () => request('GET', '/rescue'),
   accept: (id) => request('POST', `/rescue/${id}/accept`),
   updateStatus: (id, data) => request('PUT', `/rescue/${id}/status`, data),
+  // Multipart collection completion with photo
+  completeCollection: (id, formData) => {
+    const token = getToken();
+    const headers = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetch(`${API_BASE}/rescue/${id}/collect`, {
+      method: 'PUT',
+      headers,
+      credentials: 'include',
+      body: formData,
+    }).then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data?.error || `Collection upload failed (${res.status})`;
+        throw Object.assign(new Error(msg), { status: res.status, data });
+      }
+      return data;
+    });
+  },
 };
 
 // ─── Questions & Answers ──────────────────────────────────────────────────
@@ -177,6 +196,12 @@ export const admin = {
   pendingExperts: () => request('GET', '/admin/verifications/experts'),
   verifyExpert: (id, action) => request('PUT', `/admin/verifications/experts/${id}`, { action }),
   fraudFlags: () => request('GET', '/admin/fraud-flags'),
+  // Rescue management
+  rescues: () => request('GET', '/admin/rescue'),
+  nearbyAssignees: (id) => request('GET', `/admin/rescue/${id}/nearby`),
+  assignRescue: (id, data) => request('POST', `/admin/rescue/${id}/assign`, data),
+  // Batches
+  batches: () => request('GET', '/admin/batches'),
 };
 
 // ─── Lab Reports ──────────────────────────────────────────────────────────

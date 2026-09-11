@@ -395,6 +395,17 @@ async function addColumnsIfNeeded() {
     `ALTER TABLE honey_batches ADD COLUMN IF NOT EXISTS blockchain_tx_hash VARCHAR(66)`,
     `ALTER TABLE honey_batches ADD COLUMN IF NOT EXISTS blockchain_verified_at TIMESTAMPTZ`,
 
+    // ── Rescue assignment & collection columns ──────────────────────────────
+    `ALTER TABLE bee_rescue_requests ADD COLUMN IF NOT EXISTS assigned_by INTEGER REFERENCES users(id)`,
+    `ALTER TABLE bee_rescue_requests ADD COLUMN IF NOT EXISTS assignment_notes TEXT`,
+    `ALTER TABLE bee_rescue_requests ADD COLUMN IF NOT EXISTS collection_photo_url TEXT`,
+    `ALTER TABLE bee_rescue_requests ADD COLUMN IF NOT EXISTS collection_notes TEXT`,
+    `ALTER TABLE bee_rescue_requests ADD COLUMN IF NOT EXISTS collected_at TIMESTAMPTZ`,
+
+    // ── Collector GPS (for Haversine distance) ───────────────────────────────
+    `ALTER TABLE collector_profiles ADD COLUMN IF NOT EXISTS latitude DECIMAL(10, 8)`,
+    `ALTER TABLE collector_profiles ADD COLUMN IF NOT EXISTS longitude DECIMAL(11, 8)`,
+
     // ── Blockchain columns (lab_reports) ─────────────────────────────────────
     `ALTER TABLE lab_reports ADD COLUMN IF NOT EXISTS blockchain_status VARCHAR(20) DEFAULT 'PENDING'`,
     `ALTER TABLE lab_reports ADD COLUMN IF NOT EXISTS blockchain_tx_hash VARCHAR(66)`,

@@ -24,8 +24,8 @@ const submitRescue = async (req, res) => {
       return res.status(400).json({ error: 'Description and location description are required.' });
     }
 
-    // photo_url from multer upload (if provided)
-    const photo_url = req.file ? `/uploads/${req.file.filename}` : null;
+    // photo_url from Cloudinary (req.fileUrl) or local multer (fallback)
+    const photo_url = req.fileUrl || (req.file ? `/uploads/${req.file.filename}` : null);
 
     const request_number = generateRequestNumber();
     const result = await pool.query(`
@@ -60,29 +60,41 @@ const submitRescue = async (req, res) => {
   }
 };
 
-// GET /api/rescue — collectors see all open requests, users see their own
+// GET /api/rescue — collectors/sellers see assigned, users see their own
 const getRescueRequests = async (req, res) => {
   try {
     let query, params;
 
-    if (req.user && (req.user.role === 'COLLECTOR' || req.user.role === 'ADMIN')) {
-      // Collectors/admin see all active requests
-      // Exact coordinates only revealed once a collector is assigned
+    if (req.user && req.user.role === 'ADMIN') {
+      // Admin sees all requests
       query = `
-        SELECT id, request_number, reporter_name, reporter_phone,
-          description, approximate_size, location_description,
-          status, assigned_collector, created_at, updated_at,
-          photo_url,
-          CASE WHEN status IN ('COLLECTOR_ASSIGNED','SCHEDULED','COLLECTED','COMPLETED')
-            THEN latitude ELSE NULL END AS latitude,
-          CASE WHEN status IN ('COLLECTOR_ASSIGNED','SCHEDULED','COLLECTED','COMPLETED')
-            THEN longitude ELSE NULL END AS longitude,
-          location_accuracy
-        FROM bee_rescue_requests
-        WHERE status NOT IN ('COMPLETED', 'CANCELLED')
-        ORDER BY created_at DESC
+        SELECT brr.*, u.name AS reporter_user_name, u.email AS reporter_email,
+          ac.name AS assigned_collector_name
+        FROM bee_rescue_requests brr
+        LEFT JOIN users u ON u.id = brr.reported_by
+        LEFT JOIN users ac ON ac.id = brr.assigned_collector
+        ORDER BY brr.created_at DESC
       `;
       params = [];
+    } else if (req.user && (req.user.role === 'COLLECTOR' || req.user.role === 'SELLER')) {
+      // Sellers/Collectors see requests assigned to them
+      query = `
+        SELECT brr.id, brr.request_number, brr.reporter_name, brr.reporter_phone,
+          brr.description, brr.approximate_size, brr.location_description,
+          brr.status, brr.assigned_collector, brr.created_at, brr.updated_at,
+          brr.photo_url, brr.collector_notes, brr.honey_quantity_kg,
+          brr.collection_photo_url, brr.collection_notes, brr.collected_at,
+          brr.assignment_notes,
+          CASE WHEN brr.status IN ('COLLECTOR_ASSIGNED','SCHEDULED','COLLECTED','COMPLETED')
+            THEN brr.latitude ELSE NULL END AS latitude,
+          CASE WHEN brr.status IN ('COLLECTOR_ASSIGNED','SCHEDULED','COLLECTED','COMPLETED')
+            THEN brr.longitude ELSE NULL END AS longitude,
+          brr.location_accuracy
+        FROM bee_rescue_requests brr
+        WHERE brr.assigned_collector = $1
+        ORDER BY brr.created_at DESC
+      `;
+      params = [req.user.id];
     } else if (req.user) {
       // Regular users see only their own requests
       query = `
@@ -131,7 +143,7 @@ const acceptRescue = async (req, res) => {
   }
 };
 
-// PUT /api/rescue/:id/status — COLLECTOR or ADMIN
+// PUT /api/rescue/:id/status — COLLECTOR, SELLER, or ADMIN
 const updateRescueStatus = async (req, res) => {
   try {
     const { id } = req.params;
@@ -164,4 +176,50 @@ const updateRescueStatus = async (req, res) => {
   }
 };
 
-module.exports = { submitRescue, getRescueRequests, acceptRescue, updateRescueStatus };
+// PUT /api/rescue/:id/collect — Assigned SELLER/COLLECTOR completes collection with photo
+const completeCollection = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { collection_notes, honey_quantity_kg } = req.body;
+
+    const existing = await pool.query('SELECT * FROM bee_rescue_requests WHERE id = $1', [id]);
+    if (existing.rows.length === 0) return res.status(404).json({ error: 'Rescue request not found.' });
+
+    // Only the assigned user or admin can complete
+    if (existing.rows[0].assigned_collector !== req.user.id && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Not authorized. This rescue is not assigned to you.' });
+    }
+
+    // Must be in assignable state
+    const validStatuses = ['COLLECTOR_ASSIGNED', 'SCHEDULED'];
+    if (!validStatuses.includes(existing.rows[0].status)) {
+      return res.status(400).json({ error: `Cannot complete collection from status: ${existing.rows[0].status}` });
+    }
+
+    // Collection photo from Cloudinary or local
+    const collection_photo_url = req.fileUrl || (req.file ? `/uploads/${req.file.filename}` : null);
+
+    await pool.query(`
+      UPDATE bee_rescue_requests
+      SET status = 'COLLECTED',
+          collection_photo_url = COALESCE($1, collection_photo_url),
+          collection_notes = COALESCE($2, collection_notes),
+          honey_quantity_kg = COALESCE($3, honey_quantity_kg),
+          collected_at = NOW(),
+          updated_at = NOW()
+      WHERE id = $4
+    `, [
+      collection_photo_url,
+      collection_notes || null,
+      honey_quantity_kg ? parseFloat(honey_quantity_kg) : null,
+      id,
+    ]);
+
+    res.json({ message: 'Collection completed successfully.' });
+  } catch (err) {
+    console.error('completeCollection error:', err.message);
+    res.status(500).json({ error: 'Failed to complete collection.' });
+  }
+};
+
+module.exports = { submitRescue, getRescueRequests, acceptRescue, updateRescueStatus, completeCollection };

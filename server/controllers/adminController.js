@@ -1,5 +1,18 @@
 const { pool } = require('../config/db');
 
+// ─── Haversine distance (km) ─────────────────────────────────────────────────
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371; // Earth radius in km
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+    Math.cos((lat2 * Math.PI) / 180) *
+    Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 // GET /api/admin/dashboard
 const getDashboard = async (req, res) => {
   try {
@@ -32,6 +45,229 @@ const getDashboard = async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch dashboard data.' });
   }
 };
+
+// ─── Rescue Management ──────────────────────────────────────────────────────
+
+// GET /api/admin/rescue — ALL rescue requests with full data
+const getAllRescueRequests = async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT brr.*,
+        u.name AS reporter_user_name, u.email AS reporter_email,
+        ac.name AS assigned_collector_name, ac.role AS assigned_collector_role
+      FROM bee_rescue_requests brr
+      LEFT JOIN users u ON u.id = brr.reported_by
+      LEFT JOIN users ac ON ac.id = brr.assigned_collector
+      ORDER BY brr.created_at DESC
+    `);
+    res.json({ requests: result.rows });
+  } catch (err) {
+    console.error('getAllRescueRequests error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch rescue requests.' });
+  }
+};
+
+// GET /api/admin/rescue/:id/nearby — nearby verified SELLERS + COLLECTORS
+const getNearbyAssignees = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get rescue request location
+    const rescue = await pool.query(
+      'SELECT latitude, longitude FROM bee_rescue_requests WHERE id = $1',
+      [id]
+    );
+    if (rescue.rows.length === 0) {
+      return res.status(404).json({ error: 'Rescue request not found.' });
+    }
+
+    const { latitude: rLat, longitude: rLng } = rescue.rows[0];
+    if (!rLat || !rLng) {
+      return res.status(400).json({ error: 'Rescue request has no GPS coordinates.' });
+    }
+
+    // Get verified SELLERS with GPS
+    const sellers = await pool.query(`
+      SELECT u.id, u.name, u.email, u.role, u.phone,
+        sp.farm_name, sp.village, sp.district, sp.state,
+        sp.latitude, sp.longitude, sp.verification_status,
+        sp.number_of_colonies,
+        (SELECT COUNT(*) FROM bee_rescue_requests WHERE assigned_collector = u.id AND status NOT IN ('COMPLETED','CANCELLED')) AS active_assignments
+      FROM users u
+      JOIN seller_profiles sp ON sp.user_id = u.id
+      WHERE u.role = 'SELLER'
+        AND u.is_active = TRUE
+        AND sp.verification_status = 'VERIFIED'
+        AND sp.latitude IS NOT NULL
+        AND sp.longitude IS NOT NULL
+    `);
+
+    // Get verified COLLECTORS with GPS (profile lat/lng or fallback to farm)
+    const collectors = await pool.query(`
+      SELECT u.id, u.name, u.email, u.role, u.phone,
+        cp.village, cp.district, cp.state,
+        cp.verification_status,
+        COALESCE(cp.latitude, f.latitude) AS latitude,
+        COALESCE(cp.longitude, f.longitude) AS longitude,
+        f.farm_name,
+        (SELECT COUNT(*) FROM bee_rescue_requests WHERE assigned_collector = u.id AND status NOT IN ('COMPLETED','CANCELLED')) AS active_assignments
+      FROM users u
+      JOIN collector_profiles cp ON cp.user_id = u.id
+      LEFT JOIN farms f ON f.seller_id = u.id
+      WHERE u.role = 'COLLECTOR'
+        AND u.is_active = TRUE
+        AND cp.verification_status = 'VERIFIED'
+    `);
+
+    const rescueLat = parseFloat(rLat);
+    const rescueLng = parseFloat(rLng);
+
+    // Calculate distances and combine
+    const assignees = [];
+
+    for (const s of sellers.rows) {
+      const lat = parseFloat(s.latitude);
+      const lng = parseFloat(s.longitude);
+      if (!isNaN(lat) && !isNaN(lng)) {
+        assignees.push({
+          id: s.id,
+          name: s.name,
+          email: s.email,
+          phone: s.phone,
+          role: 'SELLER',
+          farm_name: s.farm_name,
+          village: s.village,
+          district: s.district,
+          state: s.state,
+          verification_status: s.verification_status,
+          number_of_colonies: s.number_of_colonies,
+          active_assignments: parseInt(s.active_assignments),
+          distance_km: Math.round(haversineKm(rescueLat, rescueLng, lat, lng) * 10) / 10,
+        });
+      }
+    }
+
+    for (const c of collectors.rows) {
+      const lat = c.latitude ? parseFloat(c.latitude) : null;
+      const lng = c.longitude ? parseFloat(c.longitude) : null;
+      if (lat && lng && !isNaN(lat) && !isNaN(lng)) {
+        assignees.push({
+          id: c.id,
+          name: c.name,
+          email: c.email,
+          phone: c.phone,
+          role: 'COLLECTOR',
+          farm_name: c.farm_name || null,
+          village: c.village,
+          district: c.district,
+          state: c.state,
+          verification_status: c.verification_status,
+          active_assignments: parseInt(c.active_assignments),
+          distance_km: Math.round(haversineKm(rescueLat, rescueLng, lat, lng) * 10) / 10,
+        });
+      }
+    }
+
+    // Sort by distance
+    assignees.sort((a, b) => a.distance_km - b.distance_km);
+
+    res.json({ assignees, rescue_location: { latitude: rescueLat, longitude: rescueLng } });
+  } catch (err) {
+    console.error('getNearbyAssignees error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch nearby assignees.' });
+  }
+};
+
+// POST /api/admin/rescue/:id/assign — assign a SELLER or COLLECTOR
+const assignRescue = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { assignee_id, assignment_notes } = req.body;
+
+    if (!assignee_id) {
+      return res.status(400).json({ error: 'assignee_id is required.' });
+    }
+
+    // Verify the rescue request exists and is assignable
+    const rescue = await pool.query('SELECT * FROM bee_rescue_requests WHERE id = $1', [id]);
+    if (rescue.rows.length === 0) {
+      return res.status(404).json({ error: 'Rescue request not found.' });
+    }
+    const r = rescue.rows[0];
+    if (!['REPORTED', 'UNDER_REVIEW'].includes(r.status)) {
+      return res.status(400).json({ error: `Cannot assign from status: ${r.status}. Must be REPORTED or UNDER_REVIEW.` });
+    }
+
+    // Verify the assignee is a valid verified SELLER or COLLECTOR
+    const assignee = await pool.query(
+      'SELECT id, name, role, is_active FROM users WHERE id = $1',
+      [assignee_id]
+    );
+    if (assignee.rows.length === 0) {
+      return res.status(404).json({ error: 'Assignee not found.' });
+    }
+    const a = assignee.rows[0];
+    if (!['SELLER', 'COLLECTOR'].includes(a.role)) {
+      return res.status(400).json({ error: 'Assignee must be a SELLER or COLLECTOR.' });
+    }
+    if (!a.is_active) {
+      return res.status(400).json({ error: 'Assignee account is suspended.' });
+    }
+
+    // Check verification status
+    const profileTable = a.role === 'SELLER' ? 'seller_profiles' : 'collector_profiles';
+    const profileCheck = await pool.query(
+      `SELECT verification_status FROM ${profileTable} WHERE user_id = $1`,
+      [assignee_id]
+    );
+    if (profileCheck.rows.length === 0 || profileCheck.rows[0].verification_status !== 'VERIFIED') {
+      return res.status(400).json({ error: `${a.role} is not verified. Only verified users can be assigned.` });
+    }
+
+    // Assign
+    await pool.query(`
+      UPDATE bee_rescue_requests
+      SET status = 'COLLECTOR_ASSIGNED',
+          assigned_collector = $1,
+          assigned_by = $2,
+          assignment_notes = $3,
+          updated_at = NOW()
+      WHERE id = $4
+    `, [assignee_id, req.user.id, assignment_notes || null, id]);
+
+    res.json({
+      message: `Rescue assigned to ${a.role.toLowerCase()} "${a.name}" successfully.`,
+      assignee: { id: a.id, name: a.name, role: a.role },
+    });
+  } catch (err) {
+    console.error('assignRescue error:', err.message);
+    res.status(500).json({ error: 'Failed to assign rescue request.' });
+  }
+};
+
+// ─── Batches (admin) ─────────────────────────────────────────────────────────
+
+// GET /api/admin/batches — all batches
+const getAllBatches = async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT hb.*, hp.name AS product_name, u.name AS seller_name,
+        f.farm_name, lr.overall_status AS lab_status, lr.report_id
+      FROM honey_batches hb
+      LEFT JOIN honey_products hp ON hp.id = hb.product_id
+      JOIN users u ON u.id = hb.seller_id
+      LEFT JOIN farms f ON f.id = hb.farm_id
+      LEFT JOIN lab_reports lr ON lr.batch_id = hb.id
+      ORDER BY hb.created_at DESC
+    `);
+    res.json({ batches: result.rows });
+  } catch (err) {
+    console.error('getAllBatches error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch batches.' });
+  }
+};
+
+// ─── Seller/Expert Verification ─────────────────────────────────────────────
 
 // GET /api/admin/verifications/sellers
 const getPendingSellers = async (req, res) => {
@@ -163,4 +399,8 @@ const verifyExpert = async (req, res) => {
   }
 };
 
-module.exports = { getDashboard, getPendingSellers, verifySeller, suspendUser, getAllUsers, getFraudFlags, getPendingExperts, verifyExpert };
+module.exports = {
+  getDashboard, getPendingSellers, verifySeller, suspendUser, getAllUsers,
+  getFraudFlags, getPendingExperts, verifyExpert,
+  getAllRescueRequests, getNearbyAssignees, assignRescue, getAllBatches,
+};

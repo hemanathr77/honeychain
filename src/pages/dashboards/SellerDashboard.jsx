@@ -1,21 +1,27 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   LayoutDashboard, Package, FlaskConical, ShoppingBag, Star, Plus,
   TrendingUp, MapPin, ChevronRight, AlertCircle, RefreshCw, Home,
-  Edit, Beaker, X, CheckCircle, Clock, Leaf
+  Edit, Beaker, X, CheckCircle, Clock, Leaf, Siren, Image, Camera
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { sellers, products as productsApi, farms as farmsApi, batches as batchesApi, orders as ordersApi } from '../../services/api';
+import { sellers, products as productsApi, farms as farmsApi, batches as batchesApi, orders as ordersApi, rescue as rescueApi } from '../../services/api';
 import { Link } from 'react-router-dom';
+
+const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/api$/, '');
+function resolveImg(url) { if (!url) return null; if (url.startsWith('http')) return url; return `${API_BASE}${url}`; }
 
 
 const TABS = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  { id: 'rescue', label: 'Rescues', icon: Siren },
   { id: 'farm', label: 'My Farm', icon: Home },
   { id: 'products', label: 'Honey Products', icon: Package },
   { id: 'batches', label: 'Batches', icon: FlaskConical },
   { id: 'orders', label: 'Orders', icon: ShoppingBag },
 ];
+
+const RESCUE_STATUS_COLORS = { COLLECTOR_ASSIGNED: 'bg-indigo-100 text-indigo-700', SCHEDULED: 'bg-purple-100 text-purple-700', COLLECTED: 'bg-teal-100 text-teal-700', COMPLETED: 'bg-green-100 text-green-700' };
 
 function StatCard({ icon: Icon, label, value, color = 'honey', sub }) {
   return (
@@ -193,6 +199,14 @@ export default function SellerDashboard() {
   const [orderActionError, setOrderActionError] = useState('');
   const [orderActionToast, setOrderActionToast] = useState('');
 
+  // Rescue state
+  const [myRescues, setMyRescues] = useState([]);
+  const [rescueLoading, setRescueLoading] = useState(false);
+  const [collectingId, setCollectingId] = useState(null);
+  const [collectionPhoto, setCollectionPhoto] = useState(null);
+  const [collectionNotes, setCollectionNotes] = useState('');
+  const collectionFileRef = useRef();
+
   const loadData = useCallback(async () => {
     setLoading(true);
     setError('');
@@ -251,10 +265,44 @@ export default function SellerDashboard() {
   };
 
 
+  // Load rescues assigned to me
+  const loadMyRescues = useCallback(async () => {
+    setRescueLoading(true);
+    try {
+      const res = await rescueApi.list();
+      setMyRescues(res.requests || []);
+    } catch {}
+    finally { setRescueLoading(false); }
+  }, []);
+
   useEffect(() => { loadData(); }, [loadData]);
 
-  // Load seller orders when the orders tab is first opened
-  useEffect(() => { if (tab === 'orders') loadSellerOrders(); }, [tab, loadSellerOrders]);
+  useEffect(() => {
+    if (tab === 'orders') loadSellerOrders();
+    if (tab === 'rescue') loadMyRescues();
+  }, [tab, loadSellerOrders, loadMyRescues]);
+
+  const handleCollect = async (rescueId) => {
+    if (!collectionPhoto) return;
+    setCollectingId(rescueId);
+    const formData = new FormData();
+    formData.append('collection_photo', collectionPhoto);
+    if (collectionNotes.trim()) formData.append('collection_notes', collectionNotes.trim());
+    try {
+      await rescueApi.completeCollection(rescueId, formData);
+      setOrderActionToast('Collection completed! ✅');
+      setTimeout(() => setOrderActionToast(''), 3000);
+      setCollectingId(null);
+      setCollectionPhoto(null);
+      setCollectionNotes('');
+      if (collectionFileRef.current) collectionFileRef.current.value = '';
+      loadMyRescues();
+    } catch (err) {
+      setOrderActionToast(`Failed: ${err.message}`);
+      setTimeout(() => setOrderActionToast(''), 3000);
+      setCollectingId(null);
+    }
+  };
 
   const statusColor = (s) => {
     const m = { ACTIVE: 'bg-green-100 text-green-700', INACTIVE: 'bg-gray-100 text-gray-600', OUT_OF_STOCK: 'bg-red-100 text-red-700', PENDING_APPROVAL: 'bg-amber-100 text-amber-700' };
@@ -609,6 +657,94 @@ export default function SellerDashboard() {
                     })}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* ── RESCUE TAB ── */}
+            {tab === 'rescue' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-3">
+                  <h3 className="font-display font-bold text-charcoal-800">Assigned Rescues ({myRescues.length})</h3>
+                  <button onClick={loadMyRescues} className="flex items-center gap-1.5 text-xs text-charcoal-500 hover:text-charcoal-800 bg-white px-3 py-2 rounded-lg border border-cream-200"><RefreshCw size={13} /> Refresh</button>
+                </div>
+
+                {rescueLoading && <div className="text-center py-12"><RefreshCw size={24} className="animate-spin text-honey-500 mx-auto" /></div>}
+
+                {!rescueLoading && myRescues.length === 0 && (
+                  <div className="text-center py-12 bg-white rounded-2xl border border-cream-200">
+                    <Siren size={32} className="text-charcoal-300 mx-auto mb-3" />
+                    <p className="text-charcoal-400">No rescue requests assigned to you yet.</p>
+                  </div>
+                )}
+
+                {myRescues.map(r => (
+                  <div key={r.id} className="bg-white rounded-2xl shadow-card border border-cream-200 p-4 sm:p-5">
+                    <div className="flex items-start justify-between gap-3 flex-wrap mb-3">
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="font-semibold text-charcoal-800">{r.request_number}</p>
+                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${RESCUE_STATUS_COLORS[r.status] || 'bg-gray-100 text-gray-600'}`}>{r.status?.replace(/_/g, ' ')}</span>
+                        </div>
+                        <p className="text-xs text-charcoal-400 mt-0.5">{r.reporter_name} • {new Date(r.created_at).toLocaleDateString('en-IN')}</p>
+                      </div>
+                    </div>
+
+                    {/* Farmer's rescue image */}
+                    {r.photo_url && (
+                      <img src={resolveImg(r.photo_url)} alt="Rescue" className="w-full max-w-xs h-40 rounded-xl object-cover mb-3 border-2 border-cream-200" />
+                    )}
+
+                    <p className="text-sm text-charcoal-600 mb-2">{r.description}</p>
+                    <div className="flex flex-wrap gap-3 text-xs text-charcoal-500 mb-4">
+                      {r.location_description && <span>📍 {r.location_description}</span>}
+                      {r.approximate_size && <span>📐 {r.approximate_size}</span>}
+                      {r.latitude && <span>🛰 {parseFloat(r.latitude).toFixed(5)}, {parseFloat(r.longitude).toFixed(5)}</span>}
+                      {r.location_accuracy && <span>±{Math.round(r.location_accuracy)}m</span>}
+                    </div>
+                    {r.assignment_notes && <p className="text-xs text-charcoal-500 mb-3 bg-cream-50 p-2 rounded-lg">📝 {r.assignment_notes}</p>}
+
+                    {/* Already collected */}
+                    {r.collection_photo_url && (
+                      <div className="mb-3 p-3 bg-teal-50 border border-teal-200 rounded-xl">
+                        <p className="text-xs font-semibold text-teal-700 mb-1">✅ Collection completed</p>
+                        <img src={resolveImg(r.collection_photo_url)} alt="Collection" className="w-32 h-24 rounded-lg object-cover" />
+                        {r.collection_notes && <p className="text-xs text-teal-600 mt-1">{r.collection_notes}</p>}
+                      </div>
+                    )}
+
+                    {/* Collection form — only for assigned statuses */}
+                    {['COLLECTOR_ASSIGNED', 'SCHEDULED'].includes(r.status) && (
+                      <div className="border-t border-cream-200 pt-4 mt-3">
+                        <p className="text-sm font-semibold text-charcoal-800 mb-2">Complete Collection</p>
+                        <div className="space-y-3">
+                          <div>
+                            <label className="text-xs font-semibold text-charcoal-600 block mb-1">Collection Photo *</label>
+                            <input
+                              ref={collectionFileRef}
+                              type="file"
+                              accept="image/jpeg,image/png,image/webp"
+                              capture="environment"
+                              onChange={e => setCollectionPhoto(e.target.files?.[0] || null)}
+                              className="input-field text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs font-semibold text-charcoal-600 block mb-1">Notes</label>
+                            <textarea className="input-field" rows="2" placeholder="Describe the collection..." value={collectionNotes} onChange={e => setCollectionNotes(e.target.value)} />
+                          </div>
+                          <button
+                            onClick={() => handleCollect(r.id)}
+                            disabled={!collectionPhoto || collectingId === r.id}
+                            className="w-full sm:w-auto btn-primary flex items-center justify-center gap-2 disabled:opacity-60"
+                          >
+                            {collectingId === r.id ? <RefreshCw size={14} className="animate-spin" /> : <Camera size={14} />}
+                            {collectingId === r.id ? 'Uploading...' : 'Submit Collection'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </>

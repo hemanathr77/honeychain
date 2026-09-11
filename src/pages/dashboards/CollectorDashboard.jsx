@@ -1,10 +1,13 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   MapPin, Clock, CheckCircle, AlertCircle, RefreshCw,
-  User, Phone, ChevronRight, X
+  User, Phone, ChevronRight, X, Camera, Image
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { rescue as rescueApi } from '../../services/api';
+
+const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:5000/api').replace(/\/api$/, '');
+function resolveImg(url) { if (!url) return null; if (url.startsWith('http')) return url; return `${API_BASE}${url}`; }
 
 const STATUS_COLORS = {
   REPORTED: 'bg-amber-100 text-amber-700',
@@ -89,6 +92,10 @@ export default function CollectorDashboard() {
   const [accepting, setAccepting] = useState(null);
   const [updateModal, setUpdateModal] = useState(null);
   const [toast, setToast] = useState('');
+  const [collectingId, setCollectingId] = useState(null);
+  const [collectionPhoto, setCollectionPhoto] = useState(null);
+  const [collectionNotes, setCollectionNotes] = useState('');
+  const collectionFileRef = useRef();
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -263,8 +270,8 @@ export default function CollectorDashboard() {
             ) : (
               <div className="space-y-4">
                 {myRequests.map(r => (
-                  <div key={r.id} className="bg-white rounded-2xl border border-cream-200 shadow-card p-5">
-                    <div className="flex items-start justify-between mb-2">
+                  <div key={r.id} className="bg-white rounded-2xl border border-cream-200 shadow-card p-4 sm:p-5">
+                    <div className="flex items-start justify-between mb-2 flex-wrap gap-2">
                       <div>
                         <p className="font-mono text-xs text-charcoal-400">{r.request_number}</p>
                         <p className="text-sm font-semibold text-charcoal-800">{r.description}</p>
@@ -272,15 +279,71 @@ export default function CollectorDashboard() {
                           <MapPin size={10} />{r.location_description}
                         </div>
                       </div>
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[r.status]}`}>{r.status}</span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLORS[r.status]}`}>{r.status?.replace(/_/g, ' ')}</span>
                     </div>
-                    {r.status !== 'COMPLETED' && r.status !== 'CANCELLED' && (
-                      <button
-                        onClick={() => setUpdateModal(r)}
-                        className="mt-3 btn-secondary text-sm flex items-center gap-1"
-                      >
-                        <Clock size={12} /> Update Status
-                      </button>
+
+                    {/* Farmer's rescue image */}
+                    {r.photo_url && (
+                      <img src={resolveImg(r.photo_url)} alt="Rescue" className="w-full max-w-xs h-36 rounded-xl object-cover mb-3 border-2 border-cream-200" />
+                    )}
+
+                    <div className="flex flex-wrap gap-3 text-xs text-charcoal-500 mb-3">
+                      {r.latitude && <span>🛰 {parseFloat(r.latitude).toFixed(5)}, {parseFloat(r.longitude).toFixed(5)}</span>}
+                      {r.location_accuracy && <span>±{Math.round(r.location_accuracy)}m</span>}
+                      {r.approximate_size && <span>📐 {r.approximate_size}</span>}
+                    </div>
+
+                    {/* Collection completed */}
+                    {r.collection_photo_url && (
+                      <div className="mb-3 p-3 bg-teal-50 border border-teal-200 rounded-xl">
+                        <p className="text-xs font-semibold text-teal-700 mb-1">✅ Collection completed</p>
+                        <img src={resolveImg(r.collection_photo_url)} alt="Collection" className="w-32 h-24 rounded-lg object-cover" />
+                        {r.collection_notes && <p className="text-xs text-teal-600 mt-1">{r.collection_notes}</p>}
+                      </div>
+                    )}
+
+                    {/* Collection upload form */}
+                    {['COLLECTOR_ASSIGNED', 'SCHEDULED'].includes(r.status) && (
+                      <div className="border-t border-cream-200 pt-4 mt-3">
+                        <p className="text-sm font-semibold text-charcoal-800 mb-2">Complete Collection</p>
+                        <div className="space-y-3">
+                          <div>
+                            <label className="text-xs font-semibold text-charcoal-600 block mb-1">Collection Photo *</label>
+                            <input ref={collectionFileRef} type="file" accept="image/jpeg,image/png,image/webp" capture="environment" onChange={e => setCollectionPhoto(e.target.files?.[0] || null)} className="input-field text-sm" />
+                          </div>
+                          <div>
+                            <label className="text-xs font-semibold text-charcoal-600 block mb-1">Notes</label>
+                            <textarea className="input-field" rows="2" placeholder="Describe the collection..." value={collectionNotes} onChange={e => setCollectionNotes(e.target.value)} />
+                          </div>
+                          <button
+                            onClick={async () => {
+                              if (!collectionPhoto) return;
+                              setCollectingId(r.id);
+                              const fd = new FormData();
+                              fd.append('collection_photo', collectionPhoto);
+                              if (collectionNotes.trim()) fd.append('collection_notes', collectionNotes.trim());
+                              try {
+                                await rescueApi.completeCollection(r.id, fd);
+                                setToast('Collection completed! ✅');
+                                setTimeout(() => setToast(''), 3000);
+                                setCollectionPhoto(null); setCollectionNotes('');
+                                if (collectionFileRef.current) collectionFileRef.current.value = '';
+                                loadData();
+                              } catch (err) { setToast(`Failed: ${err.message}`); setTimeout(() => setToast(''), 3000); }
+                              finally { setCollectingId(null); }
+                            }}
+                            disabled={!collectionPhoto || collectingId === r.id}
+                            className="w-full sm:w-auto btn-primary flex items-center justify-center gap-2 disabled:opacity-60"
+                          >
+                            {collectingId === r.id ? <RefreshCw size={14} className="animate-spin" /> : <Camera size={14} />}
+                            {collectingId === r.id ? 'Uploading...' : 'Submit Collection'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {r.status !== 'COMPLETED' && r.status !== 'CANCELLED' && r.status !== 'COLLECTOR_ASSIGNED' && r.status !== 'SCHEDULED' && (
+                      <button onClick={() => setUpdateModal(r)} className="mt-3 btn-secondary text-sm flex items-center gap-1"><Clock size={12} /> Update Status</button>
                     )}
                   </div>
                 ))}
